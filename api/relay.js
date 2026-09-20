@@ -1,7 +1,13 @@
-const { ProxyAgent, fetch } = require('undici');
+// api/relay.js — Relay QuotaGuard para Vercel (serverless function)
+// Recebe chamadas das backend functions da Base44 e repassa pelo proxy
+// QuotaGuard (IP fixo).
+import { ProxyAgent, fetch } from 'undici';
 
 const RELAY_TOKEN = process.env.RELAY_TOKEN || '';
 const QUOTAGUARD_PROXY_URL = process.env.QUOTAGUARD_PROXY_URL || '';
+// Allowlist de hosts de destino (separados por vírgula).
+// Ex: "api.assistcard.com,ws.coris.com.br,services.assistcard.com"
+// Vazio = bloqueia TODOS os destinos (fail-closed). Configure sempre.
 const ALLOWED_TARGET_HOSTS = (process.env.ALLOWED_TARGET_HOSTS || '')
   .split(',')
   .map((h) => h.trim().toLowerCase())
@@ -25,6 +31,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'QUOTAGUARD_PROXY_URL not configured on relay' });
     }
 
+    // Valida protocolo + host do destino (guarda contra SSRF / proxy aberto)
     let targetUrl;
     try {
       targetUrl = new URL(target);
@@ -41,8 +48,13 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'target host not allowed: ' + targetUrl.hostname });
     }
 
+    // Repassa headers originais, descartando relay, hop-by-hop e forwarding
     const forwardHeaders = {};
-    const drop = ['x-relay-target', 'x-relay-token', 'host', 'content-length', 'connection', 'transfer-encoding', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip'];
+    const drop = [
+      'x-relay-target', 'x-relay-token', 'host', 'content-length',
+      'connection', 'transfer-encoding', 'x-forwarded-for',
+      'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip'
+    ];
     for (const [k, v] of Object.entries(req.headers)) {
       const lk = k.toLowerCase();
       if (drop.includes(lk) || lk.startsWith('x-relay-')) continue;
@@ -56,6 +68,7 @@ export default async function handler(req, res) {
       body: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
       dispatcher: new ProxyAgent(QUOTAGUARD_PROXY_URL),
     });
+
     const buf = Buffer.from(await resp.arrayBuffer());
     res.status(resp.statusCode);
     const ct = resp.headers.get('content-type');
