@@ -13,6 +13,7 @@ const ALLOWED_TARGET_HOSTS = (process.env.ALLOWED_TARGET_HOSTS || '')
   .map((h) => h.trim().toLowerCase())
   .filter(Boolean);
 
+
 function isHostAllowed(hostname) {
   const h = hostname.toLowerCase();
   return ALLOWED_TARGET_HOSTS.some((allowed) => h === allowed || h.endsWith('.' + allowed));
