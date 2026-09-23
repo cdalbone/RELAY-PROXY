@@ -1,60 +1,62 @@
-// api/relay.js — Relay QuotaGuard para Vercel (serverless function)
-// Recebe chamadas das backend functions da Base44 e repassa pelo proxy
-// QuotaGuard (IP fixo).
-import { ProxyAgent, fetch } from 'undici';
+const express = require('express');
+const { ProxyAgent, fetch } = require('undici');
+
+const app = express();
+app.use(express.raw({ limit: '10mb', type: '*/*' }));
 
 const RELAY_TOKEN = process.env.RELAY_TOKEN || '';
 const QUOTAGUARD_PROXY_URL = process.env.QUOTAGUARD_PROXY_URL || '';
-// Allowlist de hosts de destino (separados por vírgula).
-// Ex: "api.assistcard.com,ws.coris.com.br,services.assistcard.com"
-// Vazio = bloqueia TODOS os destinos (fail-closed). Configure sempre.
 const ALLOWED_TARGET_HOSTS = (process.env.ALLOWED_TARGET_HOSTS || '')
   .split(',')
   .map((h) => h.trim().toLowerCase())
   .filter(Boolean);
 
-
 function isHostAllowed(hostname) {
   const h = hostname.toLowerCase();
-  return ALLOWED_TARGET_HOSTS.some((allowed) => h === allowed || h.endsWith('.' + allowed));
+  return ALLOWED_TARGET_HOSTS.some((a) => h === a || h.endsWith('.' + a));
 }
 
-export default async function handler(req, res) {
+app.all('/api/relay', async (req, res) => {
   try {
+    // 1. Valida o token de acesso
     if (!RELAY_TOKEN || req.headers['x-relay-token'] !== RELAY_TOKEN) {
       return res.status(401).json({ error: 'unauthorized' });
     }
+
+    // 2. Pega o destino
     const target = req.headers['x-relay-target'];
     if (!target) {
       return res.status(400).json({ error: 'missing x-relay-target' });
     }
+
+    // 3. Verifica se o QuotaGuard está configurado
     if (!QUOTAGUARD_PROXY_URL) {
-      return res.status(500).json({ error: 'QUOTAGUARD_PROXY_URL not configured on relay' });
+      return res.status(500).json({ error: 'QUOTAGUARD_PROXY_URL not configured' });
     }
 
-    // Valida protocolo + host do destino (guarda contra SSRF / proxy aberto)
+    // 4. Valida o destino (segurança anti-SSRF)
     let targetUrl;
     try {
       targetUrl = new URL(target);
     } catch {
-      return res.status(400).json({ error: 'invalid x-relay-target url' });
+      return res.status(400).json({ error: 'invalid target url' });
     }
     if (!['http:', 'https:'].includes(targetUrl.protocol)) {
       return res.status(400).json({ error: 'only http/https targets allowed' });
     }
     if (ALLOWED_TARGET_HOSTS.length === 0) {
-      return res.status(403).json({ error: 'ALLOWED_TARGET_HOSTS not configured on relay' });
+      return res.status(403).json({ error: 'ALLOWED_TARGET_HOSTS not configured' });
     }
     if (!isHostAllowed(targetUrl.hostname)) {
       return res.status(403).json({ error: 'target host not allowed: ' + targetUrl.hostname });
     }
 
-    // Repassa headers originais, descartando relay, hop-by-hop e forwarding
+    // 5. Copia os headers, descartando os de relay e hop-by-hop
     const forwardHeaders = {};
     const drop = [
       'x-relay-target', 'x-relay-token', 'host', 'content-length',
       'connection', 'transfer-encoding', 'x-forwarded-for',
-      'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip'
+      'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip',
     ];
     for (const [k, v] of Object.entries(req.headers)) {
       const lk = k.toLowerCase();
@@ -63,6 +65,7 @@ export default async function handler(req, res) {
     }
     forwardHeaders['host'] = targetUrl.host;
 
+    // 6. Faz a requisição pelo proxy QuotaGuard
     const resp = await fetch(target, {
       method: req.method,
       headers: forwardHeaders,
@@ -70,13 +73,16 @@ export default async function handler(req, res) {
       dispatcher: new ProxyAgent(QUOTAGUARD_PROXY_URL),
     });
 
+    // 7. Retorna a resposta
     const buf = Buffer.from(await resp.arrayBuffer());
     res.status(resp.statusCode);
     const ct = resp.headers.get('content-type');
     if (ct) res.setHeader('content-type', ct);
     return res.send(buf);
   } catch (e) {
-    console.error('[relay] error', e.message);
+    console.error('[relay] error', e.message, e.stack);
     return res.status(502).json({ error: e.message });
   }
-}
+});
+
+module.exports = app;
