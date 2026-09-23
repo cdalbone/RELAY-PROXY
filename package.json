@@ -1,10 +1,9 @@
 {
-  
   "name": "quotaguard-relay",
   "version": "1.0.0",
-  "type": "module",
   "private": true,
   "dependencies": {
+    "express": "^4.19.2",
     "undici": "^6.19.8"
   }
 }
