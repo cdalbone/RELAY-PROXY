@@ -75,7 +75,7 @@ app.all('/api/relay', async (req, res) => {
 
     // 7. Retorna a resposta
     const buf = Buffer.from(await resp.arrayBuffer());
-    res.status(resp.statusCode);
+    res.status(resp.status);
     const ct = resp.headers.get('content-type');
     if (ct) res.setHeader('content-type', ct);
     return res.send(buf);
